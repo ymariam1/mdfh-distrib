@@ -21,7 +21,7 @@ target_compile_features(mdfh PUBLIC cxx_std_23)
 # Add subdirectories
 add_subdirectory(src)
 add_subdirectory(apps/feed_sim)
-# add_subdirectory(apps/bench_ingest)  # later
+add_subdirectory(apps/bench_ingest)
 enable_testing()
 add_subdirectory(tests)
 

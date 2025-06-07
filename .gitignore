@@ -1,0 +1,123 @@
+# Build directories and artifacts
+build/
+build*/
+cmake-build-*/
+out/
+dist/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+Makefile
+CTestTestfile.cmake
+install_manifest.txt
+Testing/
+*.cmake
+!CMakeLists.txt
+!*.cmake.in
+
+# Conan files
+.conan2/
+conandata.yml
+conanbuild.sh
+conanrun.sh
+deactivate_conanbuild.sh
+deactivate_conanrun.sh
+conanbuildenv*.sh
+conanrunenv*.sh
+conan_toolchain.cmake
+*-Target-*.cmake
+*-release-*.cmake
+*Config.cmake
+*ConfigVersion.cmake
+*Targets.cmake
+cmakedeps_macros.cmake
+conandeps_legacy.cmake
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Cursor AI specific
+.cursor/
+.cursorrules
+.cursorignore
+.cursorignorerules
+
+# Test results and coverage
+*.gcno
+*.gcda
+*.info
+coverage/
+lcov.info
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Package managers
+node_modules/
+.npm/
+
+# Python (if you have Python scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+
+# Environment files
+.env
+.env.local
+.env.*.local

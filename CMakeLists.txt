@@ -12,16 +12,17 @@ find_package(CLI11 REQUIRED)
 
 # Create main library
 add_library(mdfh STATIC
-    ring_buffer.cpp
-    parser.cpp
+    src/ring_buffer.cpp
+    src/encoding.cpp
+    src/simulator.cpp
+    src/ingestion.cpp
 )
 target_include_directories(mdfh PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_compile_features(mdfh PUBLIC cxx_std_23)
+target_link_libraries(mdfh PUBLIC Boost::boost)
 
 # Add subdirectories
 add_subdirectory(src)
-add_subdirectory(apps/feed_sim)
-add_subdirectory(apps/bench_ingest)
 enable_testing()
 add_subdirectory(tests)
 

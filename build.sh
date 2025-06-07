@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Build script for mdfh market feed simulator with Conan dependencies
+# Build script for mdfh market data feed handling library with Conan dependencies
 
 echo "Setting up build environment for mdfh with Conan..."
 
@@ -48,15 +48,17 @@ if [ $? -eq 0 ]; then
     echo ""
     echo " Build successful!"
     echo ""
-    echo "Feed simulator executable: ./apps/feed_sim/feed_sim"
+    echo "MDFH library built successfully."
+    echo "Core library: libmdfh.a"
     echo ""
-    echo "Usage examples:"
-    echo "  ./apps/feed_sim/feed_sim --help"
-    echo "  ./apps/feed_sim/feed_sim --port 9001 --rate 1000 --batch 10"
-    echo "  ./apps/feed_sim/feed_sim -p 9002 -r 5000 -b 50 --jitter 0.1"
+    echo "Available components:"
+    echo "  - Ring buffer (lock-free, single producer/consumer)"
+    echo "  - Market data ingestion framework"
+    echo "  - Market data simulation framework"
+    echo "  - Message encoding/decoding (Binary, FIX, ITCH)"
+    echo "  - High-performance timing utilities"
     echo ""
-    echo "Default configuration:"
-    echo "  Port: 9001, Rate: 100000 msgs/sec, Batch: 100 msgs"
+    echo "Build your own applications using the mdfh library."
 else
     echo " Build failed!"
     exit 1

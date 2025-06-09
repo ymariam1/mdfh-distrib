@@ -4,7 +4,7 @@
 #include <thread>
 
 // Platform-specific prefetch intrinsics
-#ifdef __x86_64__
+#if defined(__x86_64__) || defined(__AVX2__)
 #include <xmmintrin.h>  // For _mm_prefetch
 #define PREFETCH_READ(addr) _mm_prefetch(reinterpret_cast<const char*>(addr), _MM_HINT_T0)
 #define PREFETCH_WRITE(addr) _mm_prefetch(reinterpret_cast<const char*>(addr), _MM_HINT_T0)
@@ -14,6 +14,11 @@
 #else
 #define PREFETCH_READ(addr) ((void)0)
 #define PREFETCH_WRITE(addr) ((void)0)
+#endif
+
+// Unlikely macro for branch prediction
+#ifndef UNLIKELY
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
 #endif
 
 namespace mdfh {
@@ -39,12 +44,11 @@ bool RingBuffer::try_push(const Slot& slot) {
     std::atomic_thread_fence(std::memory_order_release);
     write_pos_.store(write + 1, std::memory_order_release);
     
-    // Update high water mark
+    // Update high water mark - gated to reduce contention
     auto current_size = (write + 1) - read;
     auto current_hwm = high_water_mark_.load(std::memory_order_relaxed);
-    while (current_size > current_hwm && 
-           !high_water_mark_.compare_exchange_weak(current_hwm, current_size, std::memory_order_relaxed)) {
-        // Retry if another thread updated it
+    if (UNLIKELY(current_size > current_hwm)) {
+        high_water_mark_.store(current_size, std::memory_order_relaxed);
     }
     
     return true;
@@ -80,14 +84,69 @@ void RingBuffer::advance_write_pos(std::uint64_t count) {
     auto new_write = old_write + count;
     write_pos_.store(new_write, std::memory_order_release);
     
-    // Update high water mark
+    // Update high water mark - gated to reduce contention
     auto read = read_pos_.load(std::memory_order_acquire);
     auto current_size = new_write - read;
     auto current_hwm = high_water_mark_.load(std::memory_order_relaxed);
-    while (current_size > current_hwm && 
-           !high_water_mark_.compare_exchange_weak(current_hwm, current_size, std::memory_order_relaxed)) {
-        // Retry if another thread updated it
+    if (UNLIKELY(current_size > current_hwm)) {
+        high_water_mark_.store(current_size, std::memory_order_relaxed);
     }
+}
+
+std::uint64_t RingBuffer::try_push_bulk(const Slot* slots, std::uint64_t count) {
+    if (count == 0) return 0;
+    
+    auto write = write_pos_.load(std::memory_order_relaxed);
+    auto read = read_pos_.load(std::memory_order_acquire);
+    
+    auto available_space = capacity_ - (write - read);
+    auto to_push = std::min(count, available_space);
+    
+    if (to_push == 0) {
+        return 0;  // Buffer full
+    }
+    
+    // Copy slots in bulk
+    for (std::uint64_t i = 0; i < to_push; ++i) {
+        slots_[(write + i) & mask_] = slots[i];
+    }
+    
+    std::atomic_thread_fence(std::memory_order_release);
+    write_pos_.store(write + to_push, std::memory_order_release);
+    
+    // Update high water mark - gated to reduce contention
+    auto current_size = (write + to_push) - read;
+    auto current_hwm = high_water_mark_.load(std::memory_order_relaxed);
+    if (UNLIKELY(current_size > current_hwm)) {
+        high_water_mark_.store(current_size, std::memory_order_relaxed);
+    }
+    
+    return to_push;
+}
+
+std::uint64_t RingBuffer::try_pop_bulk(Slot* slots, std::uint64_t max_count) {
+    if (max_count == 0) return 0;
+    
+    auto read = read_pos_.load(std::memory_order_relaxed);
+    auto write = write_pos_.load(std::memory_order_acquire);
+    
+    auto available_items = write - read;
+    auto to_pop = std::min(max_count, available_items);
+    
+    if (to_pop == 0) {
+        return 0;  // Buffer empty
+    }
+    
+    // Acquire fence to ensure we see producer's writes before reading
+    std::atomic_thread_fence(std::memory_order_acquire);
+    
+    // Copy slots in bulk
+    for (std::uint64_t i = 0; i < to_pop; ++i) {
+        slots[i] = slots_[(read + i) & mask_];
+    }
+    
+    read_pos_.store(read + to_pop, std::memory_order_release);
+    return to_pop;
 }
 
 bool RingBuffer::try_push_with_prefetch(const Slot& slot) {
@@ -106,12 +165,11 @@ bool RingBuffer::try_push_with_prefetch(const Slot& slot) {
     std::atomic_thread_fence(std::memory_order_release);
     write_pos_.store(write + 1, std::memory_order_release);
     
-    // Update high water mark
+    // Update high water mark - gated to reduce contention
     auto current_size = (write + 1) - read;
     auto current_hwm = high_water_mark_.load(std::memory_order_relaxed);
-    while (current_size > current_hwm && 
-           !high_water_mark_.compare_exchange_weak(current_hwm, current_size, std::memory_order_relaxed)) {
-        // Retry if another thread updated it
+    if (UNLIKELY(current_size > current_hwm)) {
+        high_water_mark_.store(current_size, std::memory_order_relaxed);
     }
     
     return true;

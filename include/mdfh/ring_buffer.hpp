@@ -22,9 +22,9 @@ struct alignas(64) Slot {
 class RingBuffer {
 private:
     std::vector<Slot> slots_;
-    std::atomic<std::uint64_t> write_pos_{0};
-    std::atomic<std::uint64_t> read_pos_{0};
-    std::atomic<std::uint64_t> high_water_mark_{0};
+    alignas(64) std::atomic<std::uint64_t> write_pos_{0};
+    alignas(64) std::atomic<std::uint64_t> read_pos_{0};
+    alignas(64) std::atomic<std::uint64_t> high_water_mark_{0};
     std::uint64_t capacity_;
     std::uint64_t mask_;
 
@@ -38,6 +38,10 @@ public:
     // High-performance operations with prefetching
     bool try_push_with_prefetch(const Slot& slot);
     bool try_pop_with_prefetch(Slot& slot);
+    
+    // Bulk operations for batched processing
+    std::uint64_t try_push_bulk(const Slot* slots, std::uint64_t count);
+    std::uint64_t try_pop_bulk(Slot* slots, std::uint64_t max_count);
     
     // Back-pressure handling
     enum class BackPressureMode {

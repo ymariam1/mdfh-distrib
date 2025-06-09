@@ -50,16 +50,17 @@ private:
     
 public:
     IngestionStats();
+    virtual ~IngestionStats() = default;
     
     // Update statistics
-    void record_bytes_received(std::uint64_t bytes);
-    void record_message_received();
-    void record_message_processed(const Slot& slot);
-    void record_message_dropped();
+    virtual void record_bytes_received(std::uint64_t bytes);
+    virtual void record_message_received();
+    virtual void record_message_processed(const Slot& slot);
+    virtual void record_message_dropped();
     
     // Periodic reporting
-    void check_periodic_flush();
-    void print_final_stats();
+    virtual void check_periodic_flush();
+    virtual void print_final_stats();
     
     // Accessors
     std::uint64_t messages_received() const { return messages_received_.load(); }

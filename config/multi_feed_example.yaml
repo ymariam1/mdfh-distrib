@@ -1,0 +1,31 @@
+global:
+  buffer_capacity: 262144      # Main MPSC ring buffer capacity (power of 2)
+  dispatcher_threads: 1        # Number of dispatcher threads
+  max_seconds: 60             # Run duration (0 = infinite)
+  max_messages: 0             # Message limit (0 = infinite)
+  health_check_interval_ms: 100 # Health check frequency
+
+feeds:
+  - name: "primary_feed"
+    host: "127.0.0.1"
+    port: 9001
+    is_primary: true
+    heartbeat_interval_ms: 1000
+    timeout_multiplier: 3
+    buffer_capacity: 65536
+    
+  - name: "backup_feed_1"
+    host: "127.0.0.1"
+    port: 9002
+    is_primary: false
+    heartbeat_interval_ms: 1000
+    timeout_multiplier: 3
+    buffer_capacity: 65536
+    
+  - name: "backup_feed_2"
+    host: "127.0.0.1"
+    port: 9003
+    is_primary: false
+    heartbeat_interval_ms: 1000
+    timeout_multiplier: 3
+    buffer_capacity: 65536 

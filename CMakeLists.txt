@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(${CMAKE_BINARY_DIR}/conan_toolchain.cmake OPTIONAL)
 find_package(Boost REQUIRED)
 find_package(CLI11 REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 # Create main library
 add_library(mdfh STATIC
@@ -16,10 +17,15 @@ add_library(mdfh STATIC
     src/encoding.cpp
     src/simulator.cpp
     src/ingestion.cpp
+    src/multi_feed_ingestion.cpp
 )
 target_include_directories(mdfh PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_compile_features(mdfh PUBLIC cxx_std_23)
-target_link_libraries(mdfh PUBLIC Boost::boost)
+target_link_libraries(mdfh PUBLIC Boost::boost yaml-cpp)
+
+# Add applications
+add_executable(multi_feed_benchmark apps/multi_feed_benchmark.cpp)
+target_link_libraries(multi_feed_benchmark PRIVATE mdfh CLI11::CLI11)
 
 # Add subdirectories
 add_subdirectory(src)

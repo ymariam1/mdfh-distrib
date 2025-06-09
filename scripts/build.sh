@@ -28,8 +28,8 @@ else
 fi
 
 # Create build directory
-mkdir -p build
-cd build
+mkdir -p ../build
+cd ../build
 
 # Install dependencies with Conan
 echo "Installing dependencies with Conan..."

@@ -66,6 +66,19 @@ conandeps_legacy.cmake
 *.out
 *.app
 
+# Test executables and artifacts (prevent temporary test files in root)
+debug_fix
+slot_test
+size_test
+*_test
+test_*
+perf_test*
+benchmark_*
+performance_results.txt
+test_results.xml
+*_results.xml
+*_output.log
+
 # IDE files
 .vscode/
 .idea/

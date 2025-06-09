@@ -8,9 +8,13 @@
 namespace mdfh {
 
 // Slot structure for ring buffer entries
-struct Slot {
-    Msg raw;                    // The parsed message
-    std::uint64_t rx_ts;        // Receive timestamp in nanoseconds
+// Cache-line aligned for optimal performance
+struct alignas(64) Slot {
+    Msg raw;                    // The parsed message (20 bytes)
+    std::uint64_t rx_ts;        // Receive timestamp in nanoseconds (8 bytes)
+    
+    // Padding to ensure each slot takes exactly one cache line (64 - 20 - 8 = 36 bytes)
+    char padding[36];
 };
 
 // High-performance single-producer/single-consumer lock-free ring buffer
@@ -30,6 +34,19 @@ public:
     // Thread-safe operations
     bool try_push(const Slot& slot);
     bool try_pop(Slot& slot);
+    
+    // High-performance operations with prefetching
+    bool try_push_with_prefetch(const Slot& slot);
+    bool try_pop_with_prefetch(Slot& slot);
+    
+    // Back-pressure handling
+    enum class BackPressureMode {
+        DROP,    // Drop messages when buffer is full (default)
+        BLOCK    // Block until space is available
+    };
+    
+    bool try_push_or_block(const Slot& slot, std::uint64_t timeout_ns = 0, 
+                          BackPressureMode mode = BackPressureMode::DROP);
     
     // Statistics and monitoring
     std::uint64_t size() const;

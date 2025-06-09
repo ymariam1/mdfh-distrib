@@ -27,11 +27,17 @@ add_executable(test_multi_feed_ingestion test_multi_feed_ingestion.cpp)
 target_link_libraries(test_multi_feed_ingestion PRIVATE mdfh GTest::gtest GTest::gtest_main)
 target_compile_features(test_multi_feed_ingestion PRIVATE cxx_std_23)
 
+# Kernel bypass tests
+add_executable(test_kernel_bypass test_kernel_bypass.cpp)
+target_link_libraries(test_kernel_bypass PRIVATE mdfh GTest::gtest GTest::gtest_main)
+target_compile_features(test_kernel_bypass PRIVATE cxx_std_23)
+
 # Register tests with CTest
 add_test(NAME RingBufferTests COMMAND test_ring_buffer)
 add_test(NAME RingBufferAdvancedTests COMMAND test_ring_buffer_advanced)
 add_test(NAME EncodingTests COMMAND test_encoding)
 add_test(NAME MultiFeedIngestionTests COMMAND test_multi_feed_ingestion)
+add_test(NAME KernelBypassTests COMMAND test_kernel_bypass)
 
 # Performance tests (separate target for optional execution)
 add_executable(perf_tests 

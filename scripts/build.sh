@@ -4,6 +4,15 @@
 
 echo "Setting up build environment for mdfh with Conan..."
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Get the project root directory (parent of scripts directory)
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Change to project root directory
+cd "$PROJECT_ROOT"
+echo "Working from project root: $(pwd)"
+
 # Ensure Homebrew path is available
 export PATH="/opt/homebrew/bin:$PATH"
 
@@ -16,6 +25,13 @@ if ! command -v cmake &> /dev/null; then
 fi
 
 echo "Found CMake: $(cmake --version | head -1)"
+
+# Check if conanfile.txt exists
+if [ ! -f "conanfile.txt" ]; then
+    echo "ERROR: conanfile.txt not found in project root: $(pwd)"
+    echo "Please ensure you're running this script from the correct project directory."
+    exit 1
+fi
 
 # Set up Conan profile (first time only)
 if [ ! -f ~/.conan2/profiles/default ]; then

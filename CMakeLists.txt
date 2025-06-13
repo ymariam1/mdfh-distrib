@@ -17,6 +17,15 @@ find_package(Boost REQUIRED)
 find_package(CLI11 REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
+# Check for Linux perf support
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    include(CheckIncludeFile)
+    check_include_file("linux/perf_event.h" HAVE_PERF_EVENT_H)
+    if(HAVE_PERF_EVENT_H)
+        add_definitions(-DMDFH_HAVE_PERF_EVENT_H)
+    endif()
+endif()
+
 # Create main library
 add_library(mdfh STATIC
     src/ring_buffer.cpp
@@ -25,6 +34,7 @@ add_library(mdfh STATIC
     src/ingestion.cpp
     src/multi_feed_ingestion.cpp
     src/kernel_bypass.cpp
+    src/performance_tracker.cpp
 )
 target_include_directories(mdfh PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_compile_features(mdfh PUBLIC cxx_std_23)
@@ -37,11 +47,13 @@ target_link_libraries(multi_feed_benchmark PRIVATE mdfh CLI11::CLI11)
 add_executable(bypass_ingestion_benchmark apps/bypass_ingestion_benchmark.cpp)
 target_link_libraries(bypass_ingestion_benchmark PRIVATE mdfh CLI11::CLI11)
 
-add_executable(kernel_bypass_simulation_test apps/kernel_bypass_simulation_test.cpp)
-target_link_libraries(kernel_bypass_simulation_test PRIVATE mdfh CLI11::CLI11)
+
 
 add_executable(simple_bypass_test apps/simple_bypass_test.cpp)
 target_link_libraries(simple_bypass_test PRIVATE mdfh)
+
+add_executable(market_data_server apps/market_data_server.cpp)
+target_link_libraries(market_data_server PRIVATE mdfh CLI11::CLI11)
 
 # Add subdirectories
 add_subdirectory(src)

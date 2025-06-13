@@ -30,6 +30,12 @@ struct BenchmarkConfig {
     std::uint32_t poll_timeout_us = 100;
     std::uint32_t zero_copy_threshold = 64;
     
+    // Performance tracking settings
+    bool enable_hardware_timestamps = true;
+    bool enable_cache_analysis = true;
+    bool enable_detailed_latency = true;
+    std::uint32_t sampling_rate = 1000;
+    
     // Test duration
     std::uint32_t max_seconds = 60;
     std::uint64_t max_messages = 0;
@@ -37,6 +43,7 @@ struct BenchmarkConfig {
     // Output settings
     bool verbose = false;
     bool show_latency_histogram = false;
+    bool show_performance_report = false;
 };
 
 std::ostream& operator<<(std::ostream& os, const BenchmarkConfig& cfg) {
@@ -136,21 +143,47 @@ private:
         bypass_cfg.enable_zero_copy = config_.enable_zero_copy;
         bypass_cfg.zero_copy_threshold = config_.zero_copy_threshold;
         bypass_cfg.poll_timeout_us = config_.poll_timeout_us;
+        
+        // Set up performance tracking configuration
+        bypass_cfg.perf_config.enable_hardware_timestamps = config_.enable_hardware_timestamps;
+        bypass_cfg.perf_config.enable_cache_analysis = config_.enable_cache_analysis;
+        bypass_cfg.perf_config.enable_detailed_latency = config_.enable_detailed_latency;
+        bypass_cfg.perf_config.sampling_rate = config_.sampling_rate;
+        
         return bypass_cfg;
     }
     
     void consumer_loop() {
         Slot slot;
         std::uint64_t messages_processed = 0;
+        std::uint64_t empty_polls = 0;
         
         while (should_continue()) {
-            if (ring_.try_pop(slot)) {
-                stats_.record_message_processed(slot);
-                messages_processed++;
-                
-                if (config_.verbose && messages_processed % 1000000 == 0) {
-                    std::cout << "Processed " << messages_processed << " messages" << std::endl;
+            bool found_message = false;
+            
+            // Process multiple messages in a batch to reduce overhead
+            for (int i = 0; i < 100 && should_continue(); ++i) {
+                if (ring_.try_pop(slot)) {
+                    stats_.record_message_processed(slot);
+                    messages_processed++;
+                    found_message = true;
+                    
+                    if (config_.verbose && messages_processed % 1000000 == 0) {
+                        std::cout << "Processed " << messages_processed << " messages" << std::endl;
+                    }
+                } else {
+                    break; // No more messages available
                 }
+            }
+            
+            if (!found_message) {
+                empty_polls++;
+                // Brief yield to prevent 100% CPU usage when no messages available
+                if (empty_polls % 1000 == 0) {
+                    std::this_thread::yield();
+                }
+            } else {
+                empty_polls = 0; // Reset counter when we find messages
             }
             
             // Periodic statistics reporting
@@ -227,6 +260,11 @@ private:
         if (config_.show_latency_histogram) {
             stats_.print_final_stats();
         }
+        
+        // Print performance report if requested
+        if (config_.show_performance_report) {
+            client_.print_performance_report();
+        }
     }
 };
 
@@ -264,6 +302,27 @@ int main(int argc, char* argv[]) {
         ->default_val(config.poll_timeout_us);
     app.add_option("--zero-copy-threshold", config.zero_copy_threshold, "Min packet size for zero-copy")
         ->default_val(config.zero_copy_threshold);
+    
+    // Performance tracking options
+    app.add_flag("--no-hardware-timestamps", config.enable_hardware_timestamps, 
+                 "Disable hardware timestamping")
+        ->default_val(config.enable_hardware_timestamps);
+    
+    app.add_flag("--no-cache-analysis", config.enable_cache_analysis,
+                 "Disable cache performance analysis")
+        ->default_val(config.enable_cache_analysis);
+    
+    app.add_flag("--no-detailed-latency", config.enable_detailed_latency,
+                 "Disable detailed latency tracking")
+        ->default_val(config.enable_detailed_latency);
+    
+    app.add_option("--sampling-rate", config.sampling_rate,
+                   "Performance sampling rate (packets)")
+        ->default_val(config.sampling_rate);
+    
+    app.add_flag("--performance-report", config.show_performance_report,
+                 "Show detailed performance report")
+        ->default_val(config.show_performance_report);
     
     // Test duration
     app.add_option("--max-seconds,-t", config.max_seconds, "Max test duration (0 = infinite)")

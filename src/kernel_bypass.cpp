@@ -30,15 +30,63 @@ namespace mdfh {
 
 // BypassConfig validation
 bool BypassConfig::is_valid() const {
-    if (rx_ring_size == 0 || (rx_ring_size & (rx_ring_size - 1)) != 0) {
-        return false; // Must be power of 2
-    }
-    if (batch_size == 0 || batch_size > rx_ring_size) {
+    // Validate network settings
+    if (host.empty()) {
+        std::cerr << "BypassConfig validation failed: host cannot be empty" << std::endl;
         return false;
     }
+    
+    if (!is_valid_port(port)) {
+        std::cerr << "BypassConfig validation failed: invalid port " << port 
+                  << " (must be 1-65535)" << std::endl;
+        return false;
+    }
+    
     if (interface_name.empty()) {
+        std::cerr << "BypassConfig validation failed: interface_name cannot be empty" << std::endl;
         return false;
     }
+    
+    // Validate performance settings
+    if (!is_power_of_two(rx_ring_size)) {
+        std::cerr << "BypassConfig validation failed: rx_ring_size " << rx_ring_size 
+                  << " must be power of 2" << std::endl;
+        return false;
+    }
+    
+    if (rx_ring_size < 64 || rx_ring_size > (1ULL << 20)) {
+        std::cerr << "BypassConfig validation failed: rx_ring_size " << rx_ring_size 
+                  << " must be between 64 and 1M" << std::endl;
+        return false;
+    }
+    
+    if (batch_size == 0 || batch_size > rx_ring_size) {
+        std::cerr << "BypassConfig validation failed: batch_size " << batch_size 
+                  << " must be > 0 and <= rx_ring_size " << rx_ring_size << std::endl;
+        return false;
+    }
+    
+    // Validate zero-copy settings
+    if (zero_copy_threshold > 65536) {
+        std::cerr << "BypassConfig validation failed: zero_copy_threshold " << zero_copy_threshold 
+                  << " too large (max 64KB)" << std::endl;
+        return false;
+    }
+    
+    // Validate timeout settings
+    if (poll_timeout_us > 1000000) {  // 1 second max
+        std::cerr << "BypassConfig validation failed: poll_timeout_us " << poll_timeout_us 
+                  << " too large (max 1s)" << std::endl;
+        return false;
+    }
+    
+    // Validate CPU core (basic check)
+    if (cpu_core > 256) {  // Reasonable upper bound
+        std::cerr << "BypassConfig validation failed: cpu_core " << cpu_core 
+                  << " too large (max 256)" << std::endl;
+        return false;
+    }
+    
     return true;
 }
 
@@ -93,6 +141,7 @@ bool BoostAsioBypassClient::initialize(const BypassConfig& config) {
     }
     
     config_ = config;
+    perf_tracker_ = std::make_unique<PerformanceTracker>(config.perf_config);
     
     // Create underlying NetworkClient with converted config
     IngestionConfig ing_config;
@@ -162,47 +211,84 @@ void BoostAsioBypassClient::release_packet(void* context) {
 void BoostAsioBypassClient::reception_loop() {
     std::cout << "Boost.Asio bypass client reception loop started" << std::endl;
     
-    // Create our own socket for kernel bypass simulation
-    boost::asio::io_context ctx;
-    boost::asio::ip::tcp::socket socket(ctx);
-    boost::system::error_code ec;
-    
-    // Connect to the server
-    boost::asio::ip::tcp::endpoint endpoint(
-        boost::asio::ip::address::from_string(config_.host), 
-        config_.port
-    );
-    
-    socket.connect(endpoint, ec);
-    if (ec) {
-        std::cerr << "Boost.Asio bypass socket connection failed: " << ec.message() << std::endl;
-        return;
-    }
-    
-    std::cout << "Bypass socket connected to " << config_.host << ":" << config_.port << std::endl;
-    
     // Buffer for receiving data
     std::vector<std::uint8_t> buffer(65536);  // 64KB buffer
     
-    while (running_.load()) {
+    boost::asio::io_context ctx;
+    std::unique_ptr<boost::asio::ip::tcp::socket> socket;
+    boost::system::error_code ec;
+    
+    auto connect_to_server = [&]() -> bool {
         try {
-            // Use async_read_some with timeout
-            std::size_t bytes_received = 0;
+            socket = std::make_unique<boost::asio::ip::tcp::socket>(ctx);
             
-            // Set up async read with timeout
-            auto deadline = std::chrono::steady_clock::now() + 
-                           std::chrono::microseconds(config_.poll_timeout_us * 10);
+            boost::asio::ip::tcp::endpoint endpoint(
+                boost::asio::ip::address::from_string(config_.host), 
+                config_.port
+            );
             
-            // Try to receive data with non-blocking read
-            bytes_received = socket.read_some(boost::asio::buffer(buffer), ec);
+            socket->connect(endpoint, ec);
+            if (ec) {
+                std::cerr << "Failed to connect: " << ec.message() << std::endl;
+                return false;
+            }
+            
+            // Set socket to non-blocking mode
+            socket->non_blocking(true);
+            
+            // Set TCP_NODELAY for low latency
+            socket->set_option(boost::asio::ip::tcp::no_delay(true));
+            
+            std::cout << "Connected to " << config_.host << ":" << config_.port << std::endl;
+            return true;
+        } catch (const std::exception& e) {
+            std::cerr << "Connection error: " << e.what() << std::endl;
+            return false;
+        }
+    };
+    
+    // Initial connection
+    bool connected = connect_to_server();
+    auto last_reconnect_attempt = std::chrono::steady_clock::now();
+    const auto reconnect_interval = std::chrono::seconds(1);
+    
+    while (running_.load()) {
+        // Handle reconnection if needed
+        if (!connected || !socket || !socket->is_open()) {
+            auto now = std::chrono::steady_clock::now();
+            if (now - last_reconnect_attempt >= reconnect_interval) {
+                std::cout << "Attempting to reconnect..." << std::endl;
+                connected = connect_to_server();
+                last_reconnect_attempt = now;
+            } else {
+                // Wait before retry
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
+        }
+        
+        if (!connected || !socket) {
+            continue;
+        }
+        
+        try {
+            // Non-blocking read
+            std::size_t bytes_received = socket->read_some(boost::asio::buffer(buffer), ec);
             
             if (ec == boost::asio::error::would_block || ec == boost::asio::error::try_again) {
-                // No data available, continue polling
+                // No data available, poll again after timeout
                 std::this_thread::sleep_for(std::chrono::microseconds(config_.poll_timeout_us));
                 continue;
+            } else if (ec == boost::asio::error::eof) {
+                std::cout << "Server closed connection, will reconnect..." << std::endl;
+                socket->close();
+                connected = false;
+                continue;
             } else if (ec) {
-                std::cerr << "Boost.Asio reception error: " << ec.message() << std::endl;
-                break;
+                std::cerr << "Read error: " << ec.message() << std::endl;
+                socket->close();
+                connected = false;
+                continue;
             }
             
             if (bytes_received > 0) {
@@ -216,19 +302,36 @@ void BoostAsioBypassClient::reception_loop() {
                 // Create packet descriptor
                 PacketDesc packet(buffer.data(), bytes_received, timestamp_ns, nullptr);
                 
+                // Record stage timestamp
+                StageTimestamps timestamps;
+                timestamps.packet_rx = timestamp_ns;
+                
                 // Call packet handler
                 if (packet_handler_) {
+                    timestamps.parse_start = get_timestamp_ns();
                     packet_handler_(packet);
+                    timestamps.parse_end = get_timestamp_ns();
+                    record_stage_timestamp(timestamps);
+                }
+                
+                // Update cache statistics periodically
+                if (packets_received_.load() % 1000 == 0) {
+                    update_cache_stats();
                 }
             }
             
         } catch (const std::exception& e) {
-            std::cerr << "Boost.Asio reception error: " << e.what() << std::endl;
-            break;
+            std::cerr << "Reception error: " << e.what() << std::endl;
+            if (socket) {
+                socket->close();
+            }
+            connected = false;
         }
     }
     
-    socket.close();
+    if (socket && socket->is_open()) {
+        socket->close();
+    }
     std::cout << "Boost.Asio bypass client reception loop stopped" << std::endl;
 }
 
@@ -691,7 +794,16 @@ void SolarflareBypassClient::process_events() {
 
 // BypassIngestionClient implementation
 BypassIngestionClient::BypassIngestionClient(BypassConfig config)
-    : config_(std::move(config)) {}
+    : config_(std::move(config)) {
+    
+    // Initialize lock-free packet management (ZERO ALLOCATION IN HOT PATH)
+    pending_mask_ = MAX_PENDING_PACKETS - 1;
+    static_assert((MAX_PENDING_PACKETS & (MAX_PENDING_PACKETS - 1)) == 0, 
+                  "MAX_PENDING_PACKETS must be power of 2");
+    
+    // Initialize all packet contexts to nullptr
+    pending_packets_.fill(nullptr);
+}
 
 BypassIngestionClient::~BypassIngestionClient() {
     stop_ingestion();
@@ -793,14 +905,13 @@ void BypassIngestionClient::packet_handler(const PacketDesc& packet) {
         parser_->parse_bytes(packet.data, packet.length, *ring_buffer_, *stats_);
     }
     
-    // Manage packet lifecycle for zero-copy
+    // Manage packet lifecycle for zero-copy (LOCK-FREE HOT PATH)
     if (config_.enable_zero_copy && packet.context) {
-        std::lock_guard<std::mutex> lock(packet_mutex_);
-        pending_packets_.push_back(packet.context);
-        
-        // Periodic cleanup of processed packets
-        if (pending_packets_.size() > config_.batch_size * 2) {
-            cleanup_processed_packets();
+        if (!try_add_pending_packet(packet.context)) {
+            // Ring buffer full, release immediately to prevent memory leak
+            if (bypass_client_) {
+                bypass_client_->release_packet(packet.context);
+            }
         }
     } else {
         // Release packet immediately if not using zero-copy
@@ -811,16 +922,46 @@ void BypassIngestionClient::packet_handler(const PacketDesc& packet) {
 }
 
 void BypassIngestionClient::cleanup_processed_packets() {
-    std::lock_guard<std::mutex> lock(packet_mutex_);
-    
-    // For simplicity, release all pending packets
-    // In a production system, you'd track which packets are actually processed
-    for (void* context : pending_packets_) {
+    // Lock-free cleanup of processed packets
+    void* context;
+    while ((context = try_get_pending_packet()) != nullptr) {
         if (bypass_client_) {
             bypass_client_->release_packet(context);
         }
     }
-    pending_packets_.clear();
+}
+
+bool BypassIngestionClient::try_add_pending_packet(void* context) {
+    auto write_pos = pending_write_pos_.load(std::memory_order_relaxed);
+    auto read_pos = pending_read_pos_.load(std::memory_order_acquire);
+    
+    // Check if ring buffer is full
+    if ((write_pos - read_pos) >= MAX_PENDING_PACKETS) {
+        return false;  // Buffer full
+    }
+    
+    // Store packet context
+    pending_packets_[write_pos & pending_mask_] = context;
+    std::atomic_thread_fence(std::memory_order_release);
+    pending_write_pos_.store(write_pos + 1, std::memory_order_release);
+    
+    return true;
+}
+
+void* BypassIngestionClient::try_get_pending_packet() {
+    auto read_pos = pending_read_pos_.load(std::memory_order_relaxed);
+    auto write_pos = pending_write_pos_.load(std::memory_order_acquire);
+    
+    if (read_pos == write_pos) {
+        return nullptr;  // Buffer empty
+    }
+    
+    // Get packet context
+    std::atomic_thread_fence(std::memory_order_acquire);
+    void* context = pending_packets_[read_pos & pending_mask_];
+    pending_read_pos_.store(read_pos + 1, std::memory_order_release);
+    
+    return context;
 }
 
 } // namespace mdfh 

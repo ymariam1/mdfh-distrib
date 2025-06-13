@@ -32,27 +32,35 @@ std::ostream& operator<<(std::ostream& os, const IngestionConfig& cfg);
 // Statistics collector for ingestion performance
 class IngestionStats {
 private:
+    // Core counters
     std::atomic<std::uint64_t> messages_received_{0};
     std::atomic<std::uint64_t> messages_processed_{0};
-    std::atomic<std::uint64_t> bytes_received_{0};
     std::atomic<std::uint64_t> messages_dropped_{0};
+    std::atomic<std::uint64_t> bytes_received_{0};
     
-    // Gap tracking
-    std::uint64_t expected_seq_ = 0;
-    std::uint64_t gap_count_ = 0;
-    bool first_message_seen_ = false;
+    // Sequence tracking
+    std::atomic<bool> first_message_seen_{false};
+    std::uint64_t expected_seq_{0};
+    std::uint64_t gap_count_{0};
     
-    // Latency histogram (0-999 microseconds, 1µs buckets + overflow bucket)
-    std::array<std::uint64_t, 1001> latency_buckets_{};  // [0-999] + [1000+]
-    
+    // Timing
     Timer timer_;
     std::chrono::steady_clock::time_point last_flush_;
+    
+    // Latency histogram (microseconds)
+    std::array<std::uint64_t, 1001> latency_buckets_{};  // 0-999µs + overflow
+    
+    // For rate calculation - track deltas
+    std::uint64_t last_messages_received_{0};
+    std::uint64_t last_messages_processed_{0};
+    std::uint64_t last_bytes_received_{0};
+    double last_elapsed_seconds_{0.0};
     
 public:
     IngestionStats();
     virtual ~IngestionStats() = default;
     
-    // Update statistics
+    // Record events
     virtual void record_bytes_received(std::uint64_t bytes);
     virtual void record_message_received();
     virtual void record_message_processed(const Slot& slot);
@@ -62,11 +70,11 @@ public:
     virtual void check_periodic_flush();
     virtual void print_final_stats();
     
-    // Accessors
+    // Getters
     std::uint64_t messages_received() const { return messages_received_.load(); }
     std::uint64_t messages_processed() const { return messages_processed_.load(); }
-    std::uint64_t bytes_received() const { return bytes_received_.load(); }
     std::uint64_t messages_dropped() const { return messages_dropped_.load(); }
+    std::uint64_t bytes_received() const { return bytes_received_.load(); }
     std::uint64_t gap_count() const { return gap_count_; }
     double elapsed_seconds() const { return timer_.elapsed_seconds(); }
     
@@ -78,7 +86,10 @@ private:
 // Message parser - handles parsing of incoming byte streams
 class MessageParser {
 private:
-    std::vector<std::uint8_t> partial_buffer_;
+    // Pre-allocated buffer for partial messages (ZERO ALLOCATION IN HOT PATH)
+    static constexpr std::size_t MAX_PARTIAL_SIZE = 65536;  // 64KB max partial message
+    std::array<std::uint8_t, MAX_PARTIAL_SIZE> partial_buffer_;
+    std::size_t partial_size_{0};
     
 public:
     MessageParser();

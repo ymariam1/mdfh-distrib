@@ -3,12 +3,14 @@
 #include "core.hpp"
 #include "ring_buffer.hpp"
 #include "timing.hpp"
+#include "performance_tracker.hpp"
 #include <memory>
 #include <string>
 #include <vector>
 #include <functional>
 #include <atomic>
 #include <thread>
+#include <array>
 
 namespace mdfh {
 
@@ -45,6 +47,9 @@ struct BypassConfig {
     // Timeout settings
     std::uint32_t poll_timeout_us = 100;      // Polling timeout in microseconds
     
+    // Performance tracking settings
+    PerformanceConfig perf_config;            // Performance tracking configuration
+    
     // Validation
     bool is_valid() const;
 };
@@ -66,31 +71,62 @@ using PacketHandler = std::function<void(const PacketDesc& packet)>;
 
 // Abstract base class for kernel bypass networking
 class KernelBypassClient {
+protected:
+    BypassConfig config_;
+    std::unique_ptr<PerformanceTracker> perf_tracker_;
+    std::atomic<bool> running_{false};
+    std::thread reception_thread_;
+    PacketHandler packet_handler_;
+    
+    // Statistics
+    std::atomic<std::uint64_t> packets_received_{0};
+    std::atomic<std::uint64_t> bytes_received_{0};
+    std::atomic<std::uint64_t> packets_dropped_{0};
+    
 public:
+    KernelBypassClient() = default;
     virtual ~KernelBypassClient() = default;
     
-    // Configuration and lifecycle
+    // Core interface
     virtual bool initialize(const BypassConfig& config) = 0;
     virtual bool connect() = 0;
     virtual void disconnect() = 0;
     virtual bool is_connected() const = 0;
     
-    // Packet reception
+    // Reception control
     virtual void start_reception(PacketHandler handler) = 0;
     virtual void stop_reception() = 0;
-    
-    // Zero-copy packet management
     virtual void release_packet(void* context) = 0;
     
-    // Statistics and monitoring
-    virtual std::uint64_t packets_received() const = 0;
-    virtual std::uint64_t bytes_received() const = 0;
-    virtual std::uint64_t packets_dropped() const = 0;
+    // Statistics
+    virtual std::uint64_t packets_received() const { return packets_received_.load(); }
+    virtual std::uint64_t bytes_received() const { return bytes_received_.load(); }
+    virtual std::uint64_t packets_dropped() const { return packets_dropped_.load(); }
     virtual double cpu_utilization() const = 0;
     
     // Backend information
     virtual BypassBackend backend_type() const = 0;
     virtual std::string backend_info() const = 0;
+    
+    // Performance tracking
+    void print_performance_report() const {
+        if (perf_tracker_) {
+            perf_tracker_->print_performance_report();
+        }
+    }
+    
+protected:
+    void record_stage_timestamp(StageTimestamps& timestamps) {
+        if (perf_tracker_) {
+            perf_tracker_->record_timestamp(timestamps);
+        }
+    }
+    
+    void update_cache_stats() {
+        if (perf_tracker_) {
+            perf_tracker_->update_cache_stats();
+        }
+    }
 };
 
 // Factory function for creating kernel bypass clients
@@ -252,9 +288,12 @@ private:
     RingBuffer* ring_buffer_{nullptr};
     IngestionStats* stats_{nullptr};
     
-    // Zero-copy packet management
-    std::vector<void*> pending_packets_;
-    std::mutex packet_mutex_;
+    // Pre-allocated zero-copy packet management (ZERO ALLOCATION IN HOT PATH)
+    static constexpr std::size_t MAX_PENDING_PACKETS = 1024;
+    std::array<void*, MAX_PENDING_PACKETS> pending_packets_;
+    alignas(64) std::atomic<std::size_t> pending_write_pos_{0};
+    alignas(64) std::atomic<std::size_t> pending_read_pos_{0};
+    std::size_t pending_mask_;
     
 public:
     explicit BypassIngestionClient(BypassConfig config);
@@ -280,9 +319,20 @@ public:
     std::uint64_t packets_dropped() const;
     double cpu_utilization() const;
     
+    // Performance reporting
+    void print_performance_report() const {
+        if (bypass_client_) {
+            bypass_client_->print_performance_report();
+        }
+    }
+    
 private:
     void packet_handler(const PacketDesc& packet);
     void cleanup_processed_packets();
+    
+    // Zero-allocation packet management (HOT PATH)
+    bool try_add_pending_packet(void* context);
+    void* try_get_pending_packet();
 };
 
 } // namespace mdfh 

@@ -80,14 +80,31 @@ void IngestionStats::print_periodic_stats() {
     auto bytes_recv = bytes_received_.load();
     auto msgs_drop = messages_dropped_.load();
     
+    // Calculate deltas since last update
+    double time_delta = elapsed - last_elapsed_seconds_;
+    std::uint64_t recv_delta = msgs_recv - last_messages_received_;
+    std::uint64_t proc_delta = msgs_proc - last_messages_processed_;
+    std::uint64_t bytes_delta = bytes_recv - last_bytes_received_;
+    
+    // Calculate current rates
+    double recv_rate = (time_delta > 0) ? (recv_delta / time_delta) : 0;
+    double proc_rate = (time_delta > 0) ? (proc_delta / time_delta) : 0;
+    double bandwidth_mbps = (time_delta > 0) ? (bytes_delta / time_delta / 1024 / 1024) : 0;
+    
     std::cout << std::fixed << std::setprecision(1)
               << "T+" << std::setw(6) << elapsed << "s | "
               << "Recv: " << std::setw(8) << msgs_recv << " msgs | "
               << "Proc: " << std::setw(8) << msgs_proc << " msgs | "
               << "Drop: " << std::setw(6) << msgs_drop << " | "
-              << "Rate: " << std::setw(8) << (msgs_recv / elapsed) << " msg/s | "
-              << "BW: " << std::setw(6) << (bytes_recv / elapsed / 1024 / 1024) << " MB/s"
+              << "Rate: " << std::setw(8) << recv_rate << " msg/s | "
+              << "BW: " << std::setw(6) << bandwidth_mbps << " MB/s"
               << std::endl;
+              
+    // Update last values for next delta calculation
+    last_messages_received_ = msgs_recv;
+    last_messages_processed_ = msgs_proc;
+    last_bytes_received_ = bytes_recv;
+    last_elapsed_seconds_ = elapsed;
 }
 
 void IngestionStats::print_final_stats() {
@@ -134,7 +151,8 @@ std::uint64_t IngestionStats::calculate_percentile(double percentile, std::uint6
 
 // MessageParser implementation
 MessageParser::MessageParser() {
-    partial_buffer_.reserve(sizeof(Msg));
+    // Pre-allocated buffer is already initialized in header
+    partial_size_ = 0;
 }
 
 void MessageParser::process_complete_message(const Msg& msg, std::uint64_t timestamp, RingBuffer& ring, IngestionStats& stats) {
@@ -150,14 +168,36 @@ void MessageParser::process_complete_message(const Msg& msg, std::uint64_t times
 void MessageParser::parse_bytes(const std::uint8_t* data, std::size_t size, RingBuffer& ring, IngestionStats& stats) {
     std::size_t offset = 0;
     
-    // If we have partial data from previous read, prepend it
-    if (!partial_buffer_.empty()) {
-        std::size_t old_size = partial_buffer_.size();
-        partial_buffer_.resize(old_size + size);
-        std::memcpy(partial_buffer_.data() + old_size, data, size);
-        data = partial_buffer_.data();
-        size = partial_buffer_.size();
-        offset = 0;
+    // If we have partial data from previous read, prepend it (ZERO ALLOCATION)
+    if (partial_size_ > 0) {
+        // Check if we can fit the new data
+        if (partial_size_ + size > MAX_PARTIAL_SIZE) {
+            // Process what we can from the partial buffer first
+            std::size_t bytes_to_add = std::min(size, MAX_PARTIAL_SIZE - partial_size_);
+            std::memcpy(partial_buffer_.data() + partial_size_, data, bytes_to_add);
+            
+            // Process messages from the combined buffer
+            std::size_t combined_size = partial_size_ + bytes_to_add;
+            std::size_t partial_offset = 0;
+            
+            while (partial_offset + sizeof(Msg) <= combined_size) {
+                auto now_ns = get_timestamp_ns();
+                Msg msg;
+                std::memcpy(&msg, partial_buffer_.data() + partial_offset, sizeof(Msg));
+                process_complete_message(msg, now_ns, ring, stats);
+                partial_offset += sizeof(Msg);
+            }
+            
+            // Clear partial buffer and continue with remaining new data
+            partial_size_ = 0;
+            offset = bytes_to_add;  // Skip the bytes we already used
+        } else {
+            // Copy new data to partial buffer
+            std::memcpy(partial_buffer_.data() + partial_size_, data, size);
+            data = partial_buffer_.data();
+            size = partial_size_ + size;
+            offset = 0;
+        }
     }
     
     // Process complete messages
@@ -171,12 +211,19 @@ void MessageParser::parse_bytes(const std::uint8_t* data, std::size_t size, Ring
         offset += sizeof(Msg);
     }
     
-    // Save any remaining partial data
+    // Save any remaining partial data (ZERO ALLOCATION)
     if (offset < size) {
         std::size_t remaining = size - offset;
-        partial_buffer_.assign(data + offset, data + offset + remaining);
+        if (remaining <= MAX_PARTIAL_SIZE) {
+            std::memcpy(partial_buffer_.data(), data + offset, remaining);
+            partial_size_ = remaining;
+        } else {
+            // This should never happen with the increased buffer size
+            MDFH_LOG_ERROR("MessageParser", "Partial data too large, dropping");
+            partial_size_ = 0;
+        }
     } else {
-        partial_buffer_.clear();
+        partial_size_ = 0;  // No partial data
     }
 }
 

@@ -2,6 +2,7 @@
 #include <stdexcept>
 #include <chrono>
 #include <thread>
+#include <mutex>
 
 // Platform-specific prefetch intrinsics
 #if defined(__x86_64__) || defined(__AVX2__)
@@ -23,13 +24,63 @@
 
 namespace mdfh {
 
+// Logger implementation
+LogLevel Logger::current_level_ = LogLevel::INFO;
+std::ostream* Logger::output_stream_ = &std::cerr;
+
+void Logger::log(LogLevel level, const std::string& component, const std::string& message) {
+    if (level < current_level_) {
+        return;  // Skip logging if below current level
+    }
+    
+    static std::mutex log_mutex;  // Thread-safe logging
+    std::lock_guard<std::mutex> lock(log_mutex);
+    
+    *output_stream_ << get_timestamp() << " [" << level_to_string(level) << "] " 
+                   << component << ": " << message << std::endl;
+}
+
+std::string Logger::get_timestamp() {
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()) % 1000;
+    
+    std::stringstream ss;
+    ss << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+    ss << '.' << std::setfill('0') << std::setw(3) << ms.count();
+    return ss.str();
+}
+
+std::string Logger::level_to_string(LogLevel level) {
+    switch (level) {
+        case LogLevel::DEBUG: return "DEBUG";
+        case LogLevel::INFO:  return "INFO ";
+        case LogLevel::WARN:  return "WARN ";
+        case LogLevel::ERROR: return "ERROR";
+        case LogLevel::FATAL: return "FATAL";
+    }
+    return "UNKNOWN";
+}
+
 RingBuffer::RingBuffer(std::uint64_t capacity) 
     : capacity_(capacity), mask_(capacity - 1) {
-    // Ensure capacity is power of 2
-    if ((capacity & (capacity - 1)) != 0) {
-        throw std::invalid_argument("Ring buffer capacity must be power of 2");
-    }
+    validate_capacity(capacity);
     slots_.resize(capacity);
+    
+    MDFH_LOG_DEBUG("RingBuffer", "Created ring buffer with capacity " + std::to_string(capacity));
+}
+
+void RingBuffer::validate_capacity(std::uint64_t capacity) const {
+    if (capacity == 0) {
+        throw std::invalid_argument("Ring buffer capacity cannot be zero");
+    }
+    if (!is_power_of_two(capacity)) {
+        throw std::invalid_argument("Ring buffer capacity must be power of 2, got: " + std::to_string(capacity));
+    }
+    if (capacity > (1ULL << 32)) {
+        throw std::invalid_argument("Ring buffer capacity too large (max 2^32), got: " + std::to_string(capacity));
+    }
 }
 
 bool RingBuffer::try_push(const Slot& slot) {
@@ -80,12 +131,21 @@ std::uint64_t RingBuffer::high_water_mark() const {
 }
 
 void RingBuffer::advance_write_pos(std::uint64_t count) {
+    if (count == 0) return;
+    
     auto old_write = write_pos_.load(std::memory_order_relaxed);
     auto new_write = old_write + count;
+    
+    // Validate that we're not advancing beyond capacity
+    auto read = read_pos_.load(std::memory_order_acquire);
+    if ((new_write - read) > capacity_) {
+        MDFH_LOG_ERROR("RingBuffer", "Cannot advance write position beyond capacity");
+        throw std::runtime_error("Cannot advance write position beyond capacity");
+    }
+    
     write_pos_.store(new_write, std::memory_order_release);
     
     // Update high water mark - gated to reduce contention
-    auto read = read_pos_.load(std::memory_order_acquire);
     auto current_size = new_write - read;
     auto current_hwm = high_water_mark_.load(std::memory_order_relaxed);
     if (UNLIKELY(current_size > current_hwm)) {
@@ -94,7 +154,7 @@ void RingBuffer::advance_write_pos(std::uint64_t count) {
 }
 
 std::uint64_t RingBuffer::try_push_bulk(const Slot* slots, std::uint64_t count) {
-    if (count == 0) return 0;
+    if (count == 0 || slots == nullptr) return 0;
     
     auto write = write_pos_.load(std::memory_order_relaxed);
     auto read = read_pos_.load(std::memory_order_acquire);
@@ -125,7 +185,7 @@ std::uint64_t RingBuffer::try_push_bulk(const Slot* slots, std::uint64_t count) 
 }
 
 std::uint64_t RingBuffer::try_pop_bulk(Slot* slots, std::uint64_t max_count) {
-    if (max_count == 0) return 0;
+    if (max_count == 0 || slots == nullptr) return 0;
     
     auto read = read_pos_.load(std::memory_order_relaxed);
     auto write = write_pos_.load(std::memory_order_acquire);
@@ -219,6 +279,10 @@ bool RingBuffer::try_push_or_block(const Slot& slot, std::uint64_t timeout_ns, B
         // Brief yield to avoid busy spinning
         std::this_thread::yield();
     }
+}
+
+std::unique_ptr<RingBuffer> make_ring_buffer(std::uint64_t capacity) {
+    return std::make_unique<RingBuffer>(capacity);
 }
 
 } // namespace mdfh 

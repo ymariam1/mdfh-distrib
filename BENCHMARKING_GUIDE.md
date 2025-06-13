@@ -14,8 +14,6 @@ cd build
 # Basic server (50K messages/second)
 ./market_data_server --rate 50000 --verbose
 
-# High-performance server (1M messages/second)  
-./market_data_server --rate 1000000 --batch-size 1000 --verbose
 
 # Custom configuration
 ./market_data_server --host 127.0.0.1 --port 9001 --rate 100000 --max-seconds 120
